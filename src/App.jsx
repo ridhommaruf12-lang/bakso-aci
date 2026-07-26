@@ -4813,21 +4813,18 @@ function ProductEditModal({ product, onClose, onSave }) {
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        // Resize gambar agar ukuran base64-nya kecil (aman untuk localStorage, cepat dimuat)
+        // Crop ke persegi (ambil bagian tengah) lalu resize, supaya selalu pas
+        // saat ditampilkan di dalam bingkai lingkaran (card & halaman detail).
         const MAX_DIM = 480;
-        let { width, height } = img;
-        if (width > height && width > MAX_DIM) {
-          height = Math.round((height * MAX_DIM) / width);
-          width = MAX_DIM;
-        } else if (height > MAX_DIM) {
-          width = Math.round((width * MAX_DIM) / height);
-          height = MAX_DIM;
-        }
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        const outSize = Math.min(MAX_DIM, side);
         const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = outSize;
+        canvas.height = outSize;
         const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
         // JPEG kualitas 0.75 — jauh lebih kecil dari PNG/base64 mentah
         const compressed = canvas.toDataURL("image/jpeg", 0.75);
         setForm((f) => ({ ...f, image: compressed }));
