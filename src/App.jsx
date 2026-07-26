@@ -376,7 +376,6 @@ export default function BaksoAciApp() {
   // Muat konfigurasi toko (password admin, info toko, bot Telegram, dll) dari Supabase —
   // terpusat lintas perangkat, supaya ganti password/pengaturan di satu device berlaku di semua device.
   const [configLoaded, setConfigLoaded] = useState(false);
-  const configFromServer = useRef(true); // sama seperti products: render pertama pakai default, jangan langsung di-sync balik
   const SHOP_CONFIG_KEY = "config";
   useEffect(() => {
     let channel;
@@ -398,7 +397,6 @@ export default function BaksoAciApp() {
       try {
         const { data, error } = await supabase.from("shop_settings").select("value").eq("key", SHOP_CONFIG_KEY).maybeSingle();
         if (!error && data) {
-          configFromServer.current = true;
           applyConfig(data.value);
         } else if (!error && !data) {
           // Belum ada konfigurasi tersimpan (toko baru) — simpan nilai default awal ke Supabase
@@ -407,7 +405,6 @@ export default function BaksoAciApp() {
             schedule, shopInfo, paymentAccounts, autoNotify, queueNumber,
           };
           await supabase.from("shop_settings").insert({ key: SHOP_CONFIG_KEY, value: defaultConfig });
-          configFromServer.current = true;
         }
       } catch (err) {
         // Gagal memuat dari server — pakai default lokal, jangan hentikan aplikasi
@@ -421,10 +418,7 @@ export default function BaksoAciApp() {
     channel = supabase
       .channel("shop-settings-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "shop_settings", filter: `key=eq.${SHOP_CONFIG_KEY}` }, (payload) => {
-        if (payload.new) {
-          configFromServer.current = true;
-          applyConfig(payload.new.value);
-        }
+        if (payload.new) applyConfig(payload.new.value);
       })
       .subscribe();
 
@@ -433,22 +427,43 @@ export default function BaksoAciApp() {
     };
   }, []);
 
-  // Auto-sync konfigurasi toko ke Supabase setiap ada perubahan lokal (mis. admin ganti password/pengaturan)
+  // Fungsi sync eksplisit — dipanggil manual untuk kasus penting (ganti password) dan
+  // otomatis lewat useEffect di bawah untuk perubahan pengaturan lain.
+  const syncShopConfigToSupabase = (overrides = {}) => {
+    const cfg = {
+      botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
+      schedule, shopInfo, paymentAccounts, autoNotify, queueNumber,
+      ...overrides,
+    };
+    return supabase.from("shop_settings").upsert(
+      { key: SHOP_CONFIG_KEY, value: cfg, updated_at: new Date().toISOString() },
+      { onConflict: "key" }
+    );
+  };
+
+  // Auto-sync config toko ke Supabase setiap ada perubahan lokal.
+  // Dibandingkan dengan snapshot JSON terakhir yang berhasil dimuat/dikirim (bukan flag boolean),
+  // supaya tidak rawan race condition — sync hanya jalan kalau isinya BENAR-BENAR berbeda dari yang terakhir diketahui.
+  const lastKnownConfigJSON = useRef(null);
   const configSyncTimer = useRef(null);
   useEffect(() => {
     if (!configLoaded) return;
-    if (configFromServer.current) {
-      configFromServer.current = false;
+    const currentCfg = {
+      botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
+      schedule, shopInfo, paymentAccounts, autoNotify, queueNumber,
+    };
+    const currentJSON = JSON.stringify(currentCfg);
+    if (lastKnownConfigJSON.current === null) {
+      // Baru pertama kali setelah load selesai — catat sebagai baseline, jangan kirim (belum tentu berubah)
+      lastKnownConfigJSON.current = currentJSON;
       return;
     }
+    if (currentJSON === lastKnownConfigJSON.current) return; // tidak ada perubahan nyata
+    lastKnownConfigJSON.current = currentJSON;
     if (configSyncTimer.current) clearTimeout(configSyncTimer.current);
     configSyncTimer.current = setTimeout(() => {
-      const cfg = {
-        botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
-        schedule, shopInfo, paymentAccounts, autoNotify, queueNumber,
-      };
       supabase.from("shop_settings").upsert(
-        { key: SHOP_CONFIG_KEY, value: cfg, updated_at: new Date().toISOString() },
+        { key: SHOP_CONFIG_KEY, value: currentCfg, updated_at: new Date().toISOString() },
         { onConflict: "key" }
       ).then(({ error }) => {
         if (error) console.error("Gagal sinkron pengaturan toko ke server:", error.message || error);
@@ -504,22 +519,16 @@ export default function BaksoAciApp() {
 
   // Muat produk (termasuk stok) dari Supabase (terpusat, lintas perangkat) + realtime.
   const [productsLoaded, setProductsLoaded] = useState(false);
-  // Menandai bahwa perubahan `products` berikutnya berasal dari server (load awal / realtime),
-  // BUKAN dari aksi lokal (edit admin, checkout) — supaya useEffect sync di bawah tidak
-  // menuliskannya balik ke server (mencegah infinite loop & menimpa balik data server dengan data basi).
-  const productsFromServer = useRef(true); // true di awal: render pertama masih pakai INITIAL_PRODUCTS, belum boleh di-sync
   useEffect(() => {
     let channel;
     (async () => {
       try {
         const { data, error } = await supabase.from("products").select("id, data");
         if (!error && data && data.length > 0) {
-          productsFromServer.current = true;
           setProducts(data.map((row) => row.data));
         } else if (!error && data && data.length === 0) {
           // Tabel kosong (toko baru) — isi Supabase dengan produk default awal
           await supabase.from("products").insert(INITIAL_PRODUCTS.map((p) => ({ id: p.id, data: p })));
-          productsFromServer.current = true;
         }
       } catch (err) {
         // Gagal memuat produk dari server — pakai data default/lokal, jangan hentikan aplikasi
@@ -533,7 +542,6 @@ export default function BaksoAciApp() {
     channel = supabase
       .channel("products-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "products" }, (payload) => {
-        productsFromServer.current = true;
         if (payload.eventType === "INSERT") {
           const row = payload.new;
           setProducts((prev) => (prev.some((p) => p.id === row.id) ? prev : [...prev, row.data]));
@@ -552,17 +560,22 @@ export default function BaksoAciApp() {
     };
   }, []);
 
-  // Auto-sync setiap perubahan products (termasuk stok berkurang saat checkout) ke Supabase,
-  // supaya semua device (admin & customer lain) selalu melihat stok terbaru.
-  // HANYA sync kalau perubahan ini berasal dari aksi lokal (bukan dari server itu sendiri).
+  // Auto-sync setiap perubahan products (mis. admin edit produk/harga) ke Supabase.
+  // Dibandingkan dengan snapshot JSON terakhir yang diketahui (bukan flag boolean) supaya
+  // tidak rawan race condition — konsisten dengan pola sync config toko di atas.
+  // Catatan: checkout customer (addOrder) sudah sync stok secara eksplisit & langsung,
+  // jadi tidak bergantung pada efek debounced ini untuk kasus yang butuh kepastian tinggi.
+  const lastKnownProductsJSON = useRef(null);
   const productsSyncTimer = useRef(null);
   useEffect(() => {
-    if (!productsLoaded) return; // jangan sync sebelum load awal dari server selesai
-    if (productsFromServer.current) {
-      // Perubahan ini datang dari server (load awal / realtime) — jangan tulis balik, cukup reset flag
-      productsFromServer.current = false;
+    if (!productsLoaded) return;
+    const currentJSON = JSON.stringify(products);
+    if (lastKnownProductsJSON.current === null) {
+      lastKnownProductsJSON.current = currentJSON;
       return;
     }
+    if (currentJSON === lastKnownProductsJSON.current) return;
+    lastKnownProductsJSON.current = currentJSON;
     if (productsSyncTimer.current) clearTimeout(productsSyncTimer.current);
     productsSyncTimer.current = setTimeout(() => {
       supabase.from("products").upsert(
@@ -961,6 +974,7 @@ export default function BaksoAciApp() {
           updateOrderResi={updateOrderResi}
           deleteOrder={deleteOrder}
           updateOrderItems={updateOrderItems}
+          syncShopConfigToSupabase={syncShopConfigToSupabase}
           botToken={botToken}
           setBotToken={setBotToken}
           chatId={chatId}
@@ -2896,7 +2910,7 @@ function AdminLogin({ adminPassword, onSuccess, onCancel }) {
 }
 
 // ============ PANEL ADMIN ============
-function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatus, updateOrderNote, updateOrderOngkir, updateOrderResi, deleteOrder, updateOrderItems, botToken, setBotToken, chatId, setChatId, biteshipApiKey, setBiteshipApiKey, waTemplates, setWaTemplates, adminPassword, setAdminPassword, schedule, setSchedule, shopInfo, setShopInfo, paymentAccounts, setPaymentAccounts, autoNotify, setAutoNotify, soundEnabled, setSoundEnabled, notifSound, setNotifSound, queueNumber, setQueueNumber, saveState, testimonials, updateTestimonialStatus, deleteTestimonial, productRatings, deleteProductRating, otpRequests, theme, toggleTheme, onExit }) {
+function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatus, updateOrderNote, updateOrderOngkir, updateOrderResi, deleteOrder, updateOrderItems, syncShopConfigToSupabase, botToken, setBotToken, chatId, setChatId, biteshipApiKey, setBiteshipApiKey, waTemplates, setWaTemplates, adminPassword, setAdminPassword, schedule, setSchedule, shopInfo, setShopInfo, paymentAccounts, setPaymentAccounts, autoNotify, setAutoNotify, soundEnabled, setSoundEnabled, notifSound, setNotifSound, queueNumber, setQueueNumber, saveState, testimonials, updateTestimonialStatus, deleteTestimonial, productRatings, deleteProductRating, otpRequests, theme, toggleTheme, onExit }) {
   const [tab, setTab] = useState("orders"); // orders | menu | settings
   const [editingProduct, setEditingProduct] = useState(null); // product object or null
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -4618,18 +4632,26 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
                 } else if (newPasswordInput === "admin123") {
                   setSavedMsg("Jangan gunakan password bawaan (admin123). Pilih password lain.");
                 } else {
-                  setAdminPassword(newPasswordInput);
+                  const newPass = newPasswordInput;
+                  setAdminPassword(newPass);
                   setNewPasswordInput("");
-                  setSavedMsg("Password berhasil diperbarui.");
+                  setSavedMsg("Menyimpan...");
+                  syncShopConfigToSupabase({ adminPassword: newPass }).then(({ error }) => {
+                    if (error) {
+                      setSavedMsg("Gagal simpan ke server: " + (error.message || "coba lagi"));
+                    } else {
+                      setSavedMsg("Password berhasil diperbarui di semua perangkat.");
+                    }
+                  });
                 }
-                setTimeout(() => setSavedMsg(""), 2500);
+                setTimeout(() => setSavedMsg(""), 3000);
               }}
             >
               Simpan Perubahan
             </button>
             {savedMsg && <div style={{ ...styles.resultBox, background: "var(--success-bg)", color: "var(--success-text)", marginTop: 12 }}>{savedMsg}</div>}
             <p style={{ ...styles.settingsHint, marginTop: 16 }}>
-              ⚠️ Catatan: password & data ini hanya tersimpan selama sesi browser berjalan (tidak permanen).
+              ⚠️ Password berlaku untuk semua perangkat admin (tersimpan di server).
             </p>
           </div>
         )}
