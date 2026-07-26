@@ -201,9 +201,6 @@ export default function BaksoAciApp() {
   const [notifSound, setNotifSound] = useState("klasik"); // preset bunyi notifikasi: klasik | lonceng | chime | alarm
   const [queueNumber, setQueueNumber] = useState(1); // nomor antrian berikutnya
   const [otpRequests, setOtpRequests] = useState({}); // { [phone]: { code, expiresAt, lastSentAt } }
-  const [adminSessionLoaded, setAdminSessionLoaded] = useState(false);
-  const ADMIN_SESSION_KEY = "bakso-aci-admin-session";
-  const ADMIN_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 1 hari
   const [dataLoaded, setDataLoaded] = useState(false); // sudah selesai load dari penyimpanan?
   const [ordersLoaded, setOrdersLoaded] = useState(false); // sudah selesai load pesanan dari Supabase?
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
@@ -620,52 +617,14 @@ export default function BaksoAciApp() {
     return nowMin >= openMin || nowMin < closeMin;
   };
 
-  // Muat sesi login admin tersimpan (kalau belum lewat 1 hari)
-  const adminSessionValid = useRef(false);
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await window.storage.get(ADMIN_SESSION_KEY, false);
-        if (result && result.value) {
-          const saved = JSON.parse(result.value);
-          if (saved.expiresAt && Date.now() < saved.expiresAt) {
-            adminSessionValid.current = true;
-          } else {
-            window.storage.delete(ADMIN_SESSION_KEY, false).catch(() => {});
-          }
-        }
-      } catch (err) {
-        // Belum pernah login admin sebelumnya di perangkat ini
-      } finally {
-        setAdminSessionLoaded(true);
-      }
-    })();
-  }, []);
-
-  const saveAdminSession = () => {
-    adminSessionValid.current = true;
-    window.storage
-      .set(ADMIN_SESSION_KEY, JSON.stringify({ expiresAt: Date.now() + ADMIN_SESSION_TTL_MS }), false)
-      .catch(() => {});
-  };
-
-  const clearAdminSession = () => {
-    adminSessionValid.current = false;
-    window.storage.delete(ADMIN_SESSION_KEY, false).catch(() => {});
-  };
-
   const handleLogoClick = () => {
     logoClicks.current += 1;
     clearTimeout(clickTimer.current);
     clickTimer.current = setTimeout(() => (logoClicks.current = 0), 1200);
     if (logoClicks.current >= 5) {
       logoClicks.current = 0;
-      // Kalau sesi admin masih berlaku (belum lewat 1 hari), langsung masuk tanpa minta password lagi
-      if (adminSessionLoaded && adminSessionValid.current) {
-        setView("admin");
-      } else {
-        setView("admin-login");
-      }
+      // Selalu minta password setiap kali mau masuk admin (tidak ada sesi yang diingat)
+      setView("admin-login");
     }
   };
 
@@ -952,7 +911,7 @@ export default function BaksoAciApp() {
         <style>{fontImport}</style>
         <AdminLogin
           adminPassword={adminPassword}
-          onSuccess={() => { saveAdminSession(); setView("admin"); }}
+          onSuccess={() => setView("admin")}
           onCancel={() => setView("customer")}
         />
       </div>
