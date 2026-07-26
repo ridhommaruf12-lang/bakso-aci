@@ -491,8 +491,13 @@ export default function BaksoAciApp() {
     }
     if (productsSyncTimer.current) clearTimeout(productsSyncTimer.current);
     productsSyncTimer.current = setTimeout(() => {
-      supabase.from("products").upsert(products.map((p) => ({ id: p.id, data: p }))).then(({ error }) => {
-        if (error) console.error("Gagal sinkron produk ke server:", error);
+      supabase.from("products").upsert(
+        products.map((p) => ({ id: p.id, data: p, updated_at: new Date().toISOString() })),
+        { onConflict: "id" }
+      ).then(({ error }) => {
+        if (error) {
+          console.error("Gagal sinkron produk ke server:", error.message || error);
+        }
       });
     }, 500);
     return () => clearTimeout(productsSyncTimer.current);
@@ -596,11 +601,15 @@ export default function BaksoAciApp() {
     const fullOrder = { ...order, queueNumber };
     setOrders((o) => [fullOrder, ...o]);
     setQueueNumber((n) => n + 1);
+
+    const updatedStockById = {}; // dikumpulkan sekalian untuk langsung dikirim ke Supabase di bawah
     setProducts((ps) =>
       ps.map((p) => {
         const bought = order.items.find((i) => i.id === p.id);
         if (!bought) return p;
-        return { ...p, stock: Math.max(0, (p.stock || 0) - bought.qty) };
+        const updated = { ...p, stock: Math.max(0, (p.stock || 0) - bought.qty) };
+        updatedStockById[p.id] = updated;
+        return updated;
       })
     );
     // Simpan ke Supabase (terpusat) supaya muncul di panel admin dari device manapun.
@@ -613,6 +622,17 @@ export default function BaksoAciApp() {
     }).then(({ error }) => {
       if (error) console.error("Gagal simpan pesanan ke server:", error);
     });
+    // Update stok produk yang berkurang langsung ke Supabase — dipanggil eksplisit di sini
+    // (bukan lewat useEffect global) supaya tidak bergantung pada timing flag, jadi selalu terkirim.
+    const stockUpdates = Object.values(updatedStockById);
+    if (stockUpdates.length > 0) {
+      supabase.from("products").upsert(
+        stockUpdates.map((p) => ({ id: p.id, data: p, updated_at: new Date().toISOString() })),
+        { onConflict: "id" }
+      ).then(({ error }) => {
+        if (error) console.error("Gagal update stok ke server:", error.message || error);
+      });
+    }
   };
   const updateOrderStatus = async (id, status) => {
     const prevOrder = orders.find((ord) => ord.id === id);
