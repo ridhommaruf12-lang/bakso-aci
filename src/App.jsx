@@ -429,21 +429,23 @@ export default function BaksoAciApp() {
   }, []);
 
   // Muat produk (termasuk stok) dari Supabase (terpusat, lintas perangkat) + realtime.
-  // productsLoaded juga dipakai sebagai penanda "boleh mulai auto-sync ke server" —
-  // supaya proses load awal tidak diam-diam ter-anggap sebagai "perubahan" dan menimpa balik data server.
   const [productsLoaded, setProductsLoaded] = useState(false);
-  const skipNextProductsSync = useRef(false);
+  // Menandai bahwa perubahan `products` berikutnya berasal dari server (load awal / realtime),
+  // BUKAN dari aksi lokal (edit admin, checkout) — supaya useEffect sync di bawah tidak
+  // menuliskannya balik ke server (mencegah infinite loop & menimpa balik data server dengan data basi).
+  const productsFromServer = useRef(true); // true di awal: render pertama masih pakai INITIAL_PRODUCTS, belum boleh di-sync
   useEffect(() => {
     let channel;
     (async () => {
       try {
         const { data, error } = await supabase.from("products").select("id, data");
         if (!error && data && data.length > 0) {
-          skipNextProductsSync.current = true;
+          productsFromServer.current = true;
           setProducts(data.map((row) => row.data));
         } else if (!error && data && data.length === 0) {
           // Tabel kosong (toko baru) — isi Supabase dengan produk default awal
           await supabase.from("products").insert(INITIAL_PRODUCTS.map((p) => ({ id: p.id, data: p })));
+          productsFromServer.current = true;
         }
       } catch (err) {
         // Gagal memuat produk dari server — pakai data default/lokal, jangan hentikan aplikasi
@@ -457,7 +459,7 @@ export default function BaksoAciApp() {
     channel = supabase
       .channel("products-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "products" }, (payload) => {
-        skipNextProductsSync.current = true;
+        productsFromServer.current = true;
         if (payload.eventType === "INSERT") {
           const row = payload.new;
           setProducts((prev) => (prev.some((p) => p.id === row.id) ? prev : [...prev, row.data]));
@@ -478,12 +480,13 @@ export default function BaksoAciApp() {
 
   // Auto-sync setiap perubahan products (termasuk stok berkurang saat checkout) ke Supabase,
   // supaya semua device (admin & customer lain) selalu melihat stok terbaru.
+  // HANYA sync kalau perubahan ini berasal dari aksi lokal (bukan dari server itu sendiri).
   const productsSyncTimer = useRef(null);
   useEffect(() => {
-    if (!productsLoaded) return; // jangan sync sebelum load awal selesai
-    if (skipNextProductsSync.current) {
-      // Perubahan ini berasal dari load awal / realtime (data sudah sama dengan server) — lewati agar tidak infinite-loop
-      skipNextProductsSync.current = false;
+    if (!productsLoaded) return; // jangan sync sebelum load awal dari server selesai
+    if (productsFromServer.current) {
+      // Perubahan ini datang dari server (load awal / realtime) — jangan tulis balik, cukup reset flag
+      productsFromServer.current = false;
       return;
     }
     if (productsSyncTimer.current) clearTimeout(productsSyncTimer.current);
