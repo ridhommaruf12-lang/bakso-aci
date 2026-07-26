@@ -1,4 +1,13 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ============ SUPABASE (database terpusat untuk pesanan lintas perangkat) ============
+// URL & key ini AMAN untuk ditaruh di kode frontend — "publishable key" memang didesain
+// untuk dipakai di browser (bukan admin/secret key). Akses data diatur lewat Row Level
+// Security (RLS) di sisi Supabase, bukan lewat kerahasiaan key ini.
+const SUPABASE_URL = "https://zvzekcqstvgpiwcoujiz.supabase.co";
+const SUPABASE_KEY = "sb_publishable_I01yod1EIlUB3uRZDRNzgw_tGm9OKht";
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============ POLYFILL STORAGE (agar app berjalan mandiri di luar Claude.ai) ============
 // Kode ini awalnya dibuat memakai window.storage (API khusus lingkungan Claude artifacts).
@@ -196,6 +205,7 @@ export default function BaksoAciApp() {
   const ADMIN_SESSION_KEY = "bakso-aci-admin-session";
   const ADMIN_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 1 hari
   const [dataLoaded, setDataLoaded] = useState(false); // sudah selesai load dari penyimpanan?
+  const [ordersLoaded, setOrdersLoaded] = useState(false); // sudah selesai load pesanan dari Supabase?
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const [testimonials, setTestimonials] = useState([]); // { id, name, rating, comment, createdAt, status: 'menunggu'|'disetujui'|'ditolak' }
   const [productRatings, setProductRatings] = useState([]); // { id, productId, phone, rating, comment, createdAt } — rating per menu oleh pembeli yang sudah pernah checkout Selesai
@@ -352,7 +362,6 @@ export default function BaksoAciApp() {
         if (result && result.value) {
           const saved = JSON.parse(result.value);
           if (saved.products) setProducts(saved.products);
-          if (saved.orders) setOrders(saved.orders);
           if (saved.botToken !== undefined) setBotToken(saved.botToken);
           if (saved.chatId !== undefined) setChatId(saved.chatId);
           if (saved.biteshipApiKey !== undefined) setBiteshipApiKey(saved.biteshipApiKey);
@@ -375,6 +384,51 @@ export default function BaksoAciApp() {
     })();
   }, []);
 
+  // Muat pesanan dari Supabase (terpusat, lintas perangkat) + dengarkan perubahan real-time
+  useEffect(() => {
+    let channel;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("orders")
+          .select("id, status, data")
+          .order("created_at", { ascending: false });
+        if (!error && data) {
+          setOrders(data.map((row) => ({ ...row.data, id: row.id, status: row.status })));
+        }
+      } catch (err) {
+        // Gagal memuat pesanan dari server — biarkan daftar kosong, jangan hentikan aplikasi
+      } finally {
+        setOrdersLoaded(true);
+      }
+    })();
+
+    // Realtime: setiap ada pesanan baru/berubah/terhapus dari device manapun,
+    // panel admin & customer lain otomatis ter-update tanpa perlu refresh.
+    channel = supabase
+      .channel("orders-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, (payload) => {
+        if (payload.eventType === "INSERT") {
+          const row = payload.new;
+          setOrders((prev) => {
+            if (prev.some((o) => o.id === row.id)) return prev; // sudah ada (mis. device pemesan sendiri)
+            return [{ ...row.data, id: row.id, status: row.status }, ...prev];
+          });
+        } else if (payload.eventType === "UPDATE") {
+          const row = payload.new;
+          setOrders((prev) => prev.map((o) => (o.id === row.id ? { ...row.data, id: row.id, status: row.status } : o)));
+        } else if (payload.eventType === "DELETE") {
+          const row = payload.old;
+          setOrders((prev) => prev.filter((o) => o.id !== row.id));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, []);
+
   // Simpan otomatis (debounced) tiap kali data penting berubah
   useEffect(() => {
     if (!dataLoaded) return; // jangan simpan sebelum load awal selesai (mencegah menimpa data lama dengan default)
@@ -383,7 +437,7 @@ export default function BaksoAciApp() {
     saveTimer.current = setTimeout(async () => {
       try {
         const payload = {
-          products, orders, botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
+          products, botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
           schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests,
         };
         const result = await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
@@ -393,7 +447,7 @@ export default function BaksoAciApp() {
       }
     }, 600);
     return () => clearTimeout(saveTimer.current);
-  }, [products, orders, botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests, dataLoaded]);
+  }, [products, botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests, dataLoaded]);
 
   const isShopOpen = () => {
     if (schedule.manualClosed) return false;
@@ -457,8 +511,21 @@ export default function BaksoAciApp() {
     }
   };
 
+  // Helper: kirim perubahan pesanan (hasil terbaru, lengkap) ke Supabase.
+  // Dipanggil setiap kali status/isi pesanan berubah, supaya semua device tersinkron.
+  const syncOrderToSupabase = (updatedOrder) => {
+    if (!updatedOrder) return;
+    supabase.from("orders").update({
+      status: updatedOrder.status || "Baru",
+      data: updatedOrder,
+    }).eq("id", updatedOrder.id).then(({ error }) => {
+      if (error) console.error("Gagal sinkron pesanan ke server:", error);
+    });
+  };
+
   const addOrder = (order) => {
-    setOrders((o) => [{ ...order, queueNumber }, ...o]);
+    const fullOrder = { ...order, queueNumber };
+    setOrders((o) => [fullOrder, ...o]);
     setQueueNumber((n) => n + 1);
     setProducts((ps) =>
       ps.map((p) => {
@@ -467,6 +534,16 @@ export default function BaksoAciApp() {
         return { ...p, stock: Math.max(0, (p.stock || 0) - bought.qty) };
       })
     );
+    // Simpan ke Supabase (terpusat) supaya muncul di panel admin dari device manapun.
+    // id & status disimpan sebagai kolom terpisah agar bisa di-query/filter,
+    // sisa detail pesanan disimpan utuh di kolom "data" (JSON).
+    supabase.from("orders").insert({
+      id: fullOrder.id,
+      status: fullOrder.status || "Baru",
+      data: fullOrder,
+    }).then(({ error }) => {
+      if (error) console.error("Gagal simpan pesanan ke server:", error);
+    });
   };
   const updateOrderStatus = async (id, status) => {
     const prevOrder = orders.find((ord) => ord.id === id);
@@ -489,6 +566,7 @@ export default function BaksoAciApp() {
       }
     }
     setOrders((o) => o.map((ord) => (ord.id === id ? { ...ord, status } : ord)));
+    syncOrderToSupabase({ ...prevOrder, status });
     if (autoNotify && botToken && chatId && STATUS_MESSAGE[status]) {
       const order = orders.find((ord) => ord.id === id);
       if (order) {
@@ -505,12 +583,21 @@ export default function BaksoAciApp() {
       }
     }
   };
-  const updateOrderNote = (id, adminNote) =>
+  const updateOrderNote = (id, adminNote) => {
     setOrders((o) => o.map((ord) => (ord.id === id ? { ...ord, adminNote } : ord)));
-  const updateOrderOngkir = (id, ongkir) =>
+    const target = orders.find((ord) => ord.id === id);
+    if (target) syncOrderToSupabase({ ...target, adminNote });
+  };
+  const updateOrderOngkir = (id, ongkir) => {
     setOrders((o) => o.map((ord) => (ord.id === id ? { ...ord, ongkir } : ord)));
-  const updateOrderResi = (id, resi) =>
+    const target = orders.find((ord) => ord.id === id);
+    if (target) syncOrderToSupabase({ ...target, ongkir });
+  };
+  const updateOrderResi = (id, resi) => {
     setOrders((o) => o.map((ord) => (ord.id === id ? { ...ord, resi } : ord)));
+    const target = orders.find((ord) => ord.id === id);
+    if (target) syncOrderToSupabase({ ...target, resi });
+  };
   // Hapus pesanan dari panel admin. Kalau stok pesanan ini masih "tertahan" (status belum Dibatalkan),
   // kembalikan dulu ke stok produk sebelum baris pesanannya dihapus permanen.
   const deleteOrder = (id) => {
@@ -524,6 +611,9 @@ export default function BaksoAciApp() {
       );
     }
     setOrders((o) => o.filter((ord) => ord.id !== id));
+    supabase.from("orders").delete().eq("id", id).then(({ error }) => {
+      if (error) console.error("Gagal hapus pesanan di server:", error);
+    });
   };
   // Admin mengedit isi/jumlah item pesanan. Sesuaikan stok berdasarkan selisih qty lama vs baru,
   // sama seperti alur customer, supaya stok tetap akurat.
@@ -546,9 +636,17 @@ export default function BaksoAciApp() {
           : ord
       )
     );
+    if (target) {
+      syncOrderToSupabase({
+        ...target,
+        items: newItems,
+        total: newItems.reduce((s, i) => s + i.qty * i.price, 0),
+      });
+    }
   };
   // Customer membatalkan pesanan sendiri (hanya boleh saat status masih "Baru")
   const cancelOrderByCustomer = (id) => {
+    let cancelledOrder = null;
     setOrders((o) =>
       o.map((ord) => {
         if (ord.id !== id || ord.status !== "Baru") return ord;
@@ -560,12 +658,15 @@ export default function BaksoAciApp() {
             return { ...p, stock: (p.stock || 0) + item.qty };
           })
         );
-        return { ...ord, status: "Dibatalkan" };
+        cancelledOrder = { ...ord, status: "Dibatalkan" };
+        return cancelledOrder;
       })
     );
+    if (cancelledOrder) syncOrderToSupabase(cancelledOrder);
   };
   // Customer mengubah alamat/catatan/isi pesanan sendiri (hanya boleh saat status masih "Baru")
   const updateOrderByCustomer = (id, { customer: newCustomer, items: newItems }) => {
+    let changedOrder = null;
     setOrders((o) =>
       o.map((ord) => {
         if (ord.id !== id || ord.status !== "Baru") return ord;
@@ -585,20 +686,24 @@ export default function BaksoAciApp() {
           updated.items = newItems;
           updated.total = newItems.reduce((s, i) => s + i.qty * i.price, 0);
         }
+        changedOrder = updated;
         return updated;
       })
     );
+    if (changedOrder) syncOrderToSupabase(changedOrder);
   };
 
   // Customer mengunggah bukti transfer (boleh kapan saja selama pesanan belum dibatalkan)
   const attachPaymentProof = (id, dataUrl, transferAmount) => {
+    let changedOrder = null;
     setOrders((o) =>
-      o.map((ord) =>
-        ord.id === id && ord.status !== "Dibatalkan"
-          ? { ...ord, paymentProof: dataUrl, paymentProofAmount: transferAmount ?? ord.paymentProofAmount }
-          : ord
-      )
+      o.map((ord) => {
+        if (ord.id !== id || ord.status === "Dibatalkan") return ord;
+        changedOrder = { ...ord, paymentProof: dataUrl, paymentProofAmount: transferAmount ?? ord.paymentProofAmount };
+        return changedOrder;
+      })
     );
+    if (changedOrder) syncOrderToSupabase(changedOrder);
   };
 
   const OTP_TTL_MS = 10 * 60 * 1000; // kode berlaku 10 menit
@@ -658,7 +763,7 @@ export default function BaksoAciApp() {
     return { ok: true, msg: "Verifikasi berhasil." };
   };
 
-  if (!dataLoaded) {
+  if (!dataLoaded || !ordersLoaded) {
     return (
       <div data-theme={theme} style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--cream)", flexDirection: "column", gap: 10, fontFamily: "'Inter', sans-serif" }}>
         <style>{fontImport}</style>
@@ -852,6 +957,16 @@ function CustomerShop({ products, orders, onLogoClick, botToken, chatId, shopInf
   useEffect(() => {
     const container = carouselRef.current;
     if (!container) return;
+
+    // Fitur "kartu tengah membesar otomatis" ini didesain untuk carousel mobile
+    // (scroll horizontal, satu kartu terlihat penuh). Di layar lebar (desktop),
+    // banyak kartu terlihat sekaligus sehingga IntersectionObserver bisa berpindah-pindah
+    // kartu "aktif" tanpa henti. Matikan sepenuhnya di atas breakpoint desktop (900px).
+    const mq = window.matchMedia("(min-width: 900px)");
+    if (mq.matches) {
+      setActiveCardId(null);
+      return;
+    }
 
     const visibility = new Map();
 
@@ -1447,6 +1562,7 @@ function CustomerShop({ products, orders, onLogoClick, botToken, chatId, shopInf
             const { avg, count } = ratingStatsFor(p.id);
             const canRate = purchasedProductIds.has(p.id);
             const myRating = canRate ? myRatingFor(p.id) : null;
+            const isCarouselMode = activeCardId !== null;
             const isActive = activeCardId === p.id;
             return (
               <div
@@ -1456,7 +1572,7 @@ function CustomerShop({ products, orders, onLogoClick, botToken, chatId, shopInf
                 className="menu-carousel-card"
                 onClick={() => {
                   if (outOfStock) return;
-                  if (!isActive) {
+                  if (isCarouselMode && !isActive) {
                     cardRefs.current[p.id]?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
                     return;
                   }
@@ -1465,7 +1581,7 @@ function CustomerShop({ products, orders, onLogoClick, botToken, chatId, shopInf
                 style={{
                   ...styles.card,
                   ...styles.carouselCard,
-                  ...(isActive ? styles.carouselCardActive : styles.carouselCardInactive),
+                  ...(isCarouselMode ? (isActive ? styles.carouselCardActive : styles.carouselCardInactive) : styles.carouselCardNeutral),
                   ...(outOfStock ? styles.cardOut : {}),
                   cursor: outOfStock ? "not-allowed" : "pointer",
                 }}
@@ -4973,6 +5089,7 @@ const styles = {
   carouselCard: { flex: "0 0 auto", scrollSnapAlign: "center", transition: "transform 0.3s ease, opacity 0.3s ease, filter 0.3s ease" },
   carouselCardActive: { transform: "scale(1.08)", opacity: 1, filter: "none", zIndex: 2 },
   carouselCardInactive: { transform: "scale(0.9)", opacity: 0.55, filter: "grayscale(35%)", zIndex: 1 },
+  carouselCardNeutral: { transform: "scale(1)", opacity: 1, filter: "none", zIndex: 1 },
   card: { background: "linear-gradient(160deg, var(--accent), var(--accent-dark))", borderRadius: 26, padding: "70px 16px 16px", position: "relative", boxShadow: "0 10px 24px var(--shadow)", border: "none", display: "flex", flexDirection: "column", alignItems: "center", color: "white" },
   cardTag: { background: "rgba(255,255,255,0.2)", color: "white", fontFamily: "'Inter', sans-serif", fontSize: 9.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap", margin: "0 0 8px" },
   cardTagDark: { background: "var(--accent-bg, rgba(214,39,62,0.12))", color: "var(--accent-dark, #B01E33)", fontFamily: "'Inter', sans-serif", fontSize: 9.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap", margin: "0 0 8px", display: "inline-block", width: "fit-content" },
