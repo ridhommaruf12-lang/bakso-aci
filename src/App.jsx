@@ -4995,9 +4995,9 @@ const styles = {
 
   // Halaman Detail Produk (mode tap kartu)
   detailModal: { background: "var(--cream)", width: "min(420px, 92%)", maxHeight: "90vh", overflowY: "auto", margin: "auto", borderRadius: 26, overflow: "hidden", display: "flex", flexDirection: "column" },
-  detailPhotoWrap: { position: "relative", background: "linear-gradient(160deg, #6B3A22, #3E2013)", padding: "22px 22px 46px", display: "flex", justifyContent: "center" },
+  detailPhotoWrap: { position: "relative", background: "linear-gradient(160deg, #6B3A22, #3E2013)", display: "flex", justifyContent: "center", overflow: "hidden" },
   detailBackBtn: { position: "absolute", top: 18, left: 18, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.18)", border: "1.5px solid rgba(255,255,255,0.4)", color: "white", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" },
-  detailPhotoCircle: { width: 190, height: 190, borderRadius: "50%", background: "white", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", boxShadow: "0 10px 24px rgba(0,0,0,0.25)", marginTop: 10 },
+  detailPhotoCircle: { width: "100%", aspectRatio: "1 / 1", background: "white", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" },
   detailPhotoImg: { width: "100%", height: "100%", objectFit: "cover" },
   detailPhotoEmoji: { fontSize: 76 },
   detailPhotoPlaceholder: { fontSize: 52, opacity: 0.3 },
