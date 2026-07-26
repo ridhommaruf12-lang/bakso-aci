@@ -4762,8 +4762,8 @@ function ProductDetailModal({ product, qty, onChangeQty, onAddToCart, ratingStat
             <span style={styles.detailPriceTag}>{fmtRupiah(product.price)}</span>
           </div>
 
-          {product.tag && <span style={styles.cardTag}>{product.tag}</span>}
-          {product.sambalTerpisah && <div style={styles.sambalBadge}>Sambal dikemas terpisah</div>}
+          {product.tag && <span style={styles.cardTagDark}>{product.tag}</span>}
+          {product.sambalTerpisah && <div style={styles.sambalBadgeDark}>Sambal dikemas terpisah</div>}
 
           <h4 style={styles.detailSectionLabel}>Tentang Menu</h4>
           <p style={styles.detailDesc}>
@@ -4803,12 +4803,39 @@ function ProductDetailModal({ product, qty, onChangeQty, onAddToCart, ratingStat
 
 function ProductEditModal({ product, onClose, onSave }) {
   const [form, setForm] = useState(product);
+  const [imageError, setImageError] = useState("");
 
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setImageError("");
     const reader = new FileReader();
-    reader.onload = () => setForm((f) => ({ ...f, image: reader.result }));
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // Resize gambar agar ukuran base64-nya kecil (aman untuk localStorage, cepat dimuat)
+        const MAX_DIM = 480;
+        let { width, height } = img;
+        if (width > height && width > MAX_DIM) {
+          height = Math.round((height * MAX_DIM) / width);
+          width = MAX_DIM;
+        } else if (height > MAX_DIM) {
+          width = Math.round((width * MAX_DIM) / height);
+          height = MAX_DIM;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        // JPEG kualitas 0.75 — jauh lebih kecil dari PNG/base64 mentah
+        const compressed = canvas.toDataURL("image/jpeg", 0.75);
+        setForm((f) => ({ ...f, image: compressed }));
+      };
+      img.onerror = () => setImageError("Gagal membaca gambar. Coba file lain.");
+      img.src = reader.result;
+    };
+    reader.onerror = () => setImageError("Gagal membaca file. Coba lagi.");
     reader.readAsDataURL(file);
   };
 
@@ -4831,6 +4858,7 @@ function ProductEditModal({ product, onClose, onSave }) {
           ) : (
             <p style={styles.settingsHint}>Belum ada gambar — kartu menu akan menampilkan emoji di bawah.</p>
           )}
+          {imageError && <p style={{ ...styles.settingsHint, color: "var(--danger-text, #C0392B)" }}>{imageError}</p>}
           <input type="file" accept="image/*" onChange={handleImageUpload} />
         </div>
         <div style={styles.formGroup}>
@@ -4950,6 +4978,7 @@ const styles = {
   carouselCardInactive: { transform: "scale(0.9)", opacity: 0.55, filter: "grayscale(35%)", zIndex: 1 },
   card: { background: "linear-gradient(160deg, var(--accent), var(--accent-dark))", borderRadius: 26, padding: "70px 16px 16px", position: "relative", boxShadow: "0 10px 24px var(--shadow)", border: "none", display: "flex", flexDirection: "column", alignItems: "center", color: "white" },
   cardTag: { background: "rgba(255,255,255,0.2)", color: "white", fontFamily: "'Inter', sans-serif", fontSize: 9.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap", margin: "0 0 8px" },
+  cardTagDark: { background: "var(--accent-bg, rgba(214,39,62,0.12))", color: "var(--accent-dark, #B01E33)", fontFamily: "'Inter', sans-serif", fontSize: 9.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap", margin: "0 0 8px", display: "inline-block", width: "fit-content" },
   cardMedia: { position: "absolute", top: -34, left: "50%", transform: "translateX(-50%)", width: 96, height: 96, borderRadius: "50%", background: "var(--cream, #FBF3E7)", boxShadow: "0 8px 18px var(--shadow)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" },
   cardMediaImg: { width: "100%", height: "100%", objectFit: "cover" },
   cardMediaEmoji: { fontSize: 44 },
@@ -4964,6 +4993,7 @@ const styles = {
   stockNote: { fontSize: 11.5, color: "rgba(255,255,255,0.75)", marginBottom: 10, fontWeight: 500, textAlign: "center" },
   stockNoteLow: { color: "#FFD9C4", fontWeight: 700 },
   sambalBadge: { fontSize: 11, color: "white", background: "rgba(255,255,255,0.18)", borderRadius: 8, padding: "4px 8px", marginBottom: 10, display: "inline-block", fontWeight: 600, width: "fit-content", alignSelf: "center" },
+  sambalBadgeDark: { fontSize: 11, color: "var(--text-soft, #4A3F35)", background: "var(--surface-alt, #F6F6F8)", border: "1px solid var(--border, #ECE7E9)", borderRadius: 8, padding: "4px 8px", marginBottom: 10, display: "inline-block", fontWeight: 600, width: "fit-content" },
   sambalCartNote: { fontSize: 11.5, color: "#5B7A4A", background: "#EAF2E3", borderRadius: 8, padding: "8px 10px", marginBottom: 12, fontWeight: 600 },
 
   // Halaman Detail Produk (mode tap kartu)
