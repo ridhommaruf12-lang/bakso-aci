@@ -1,5 +1,50 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 
+// ============ POLYFILL STORAGE (agar app berjalan mandiri di luar Claude.ai) ============
+// Kode ini awalnya dibuat memakai window.storage (API khusus lingkungan Claude artifacts).
+// Setelah di-deploy sebagai website mandiri, API itu tidak tersedia — polyfill ini
+// meniru bentuk & perilakunya (async, get/set/delete) memakai localStorage browser biasa.
+// Catatan: localStorage bersifat per-perangkat/per-browser. Data "shared" (mis. testimoni,
+// rating produk) TIDAK benar-benar dibagikan antar pengunjung berbeda tanpa backend/database
+// sungguhan — di sini disimpan lokal saja per device.
+if (typeof window !== "undefined" && !window.storage) {
+  window.storage = {
+    async get(key) {
+      try {
+        const value = localStorage.getItem(key);
+        if (value === null) throw new Error("Key not found: " + key);
+        return { key, value, shared: false };
+      } catch (e) {
+        throw e;
+      }
+    },
+    async set(key, value) {
+      try {
+        localStorage.setItem(key, value);
+        return { key, value, shared: false };
+      } catch (e) {
+        return null;
+      }
+    },
+    async delete(key) {
+      try {
+        localStorage.removeItem(key);
+        return { key, deleted: true, shared: false };
+      } catch (e) {
+        return null;
+      }
+    },
+    async list(prefix) {
+      try {
+        const keys = Object.keys(localStorage).filter((k) => !prefix || k.startsWith(prefix));
+        return { keys, prefix, shared: false };
+      } catch (e) {
+        return null;
+      }
+    },
+  };
+}
+
 // ============ DATA AWAL ============
 const INITIAL_PRODUCTS = [
   { id: "aci-original", name: "Bakso Aci Original", desc: "Kenyal gurih, kuah pedas rempah khas, isi 10 butir.", price: 15000, tag: "Best Seller", emoji: "🔥", stock: 20, sambalTerpisah: true, weight: 300 },
