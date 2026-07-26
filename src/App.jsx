@@ -354,25 +354,15 @@ export default function BaksoAciApp() {
     });
   };
 
-  // Muat data tersimpan saat pertama kali dibuka
+  // Muat data tersimpan saat pertama kali dibuka (preferensi lokal per-device: suara notifikasi, dll)
   useEffect(() => {
     (async () => {
       try {
         const result = await window.storage.get(STORAGE_KEY, false);
         if (result && result.value) {
           const saved = JSON.parse(result.value);
-          if (saved.botToken !== undefined) setBotToken(saved.botToken);
-          if (saved.chatId !== undefined) setChatId(saved.chatId);
-          if (saved.biteshipApiKey !== undefined) setBiteshipApiKey(saved.biteshipApiKey);
-          if (saved.waTemplates) setWaTemplates(saved.waTemplates);
-          if (saved.adminPassword) setAdminPassword(saved.adminPassword);
-          if (saved.schedule) setSchedule(saved.schedule);
-          if (saved.shopInfo) setShopInfo(saved.shopInfo);
-          if (saved.paymentAccounts) setPaymentAccounts(saved.paymentAccounts);
-          if (saved.autoNotify !== undefined) setAutoNotify(saved.autoNotify);
           if (saved.soundEnabled !== undefined) setSoundEnabled(saved.soundEnabled);
           if (saved.notifSound !== undefined) setNotifSound(saved.notifSound);
-          if (saved.queueNumber) setQueueNumber(saved.queueNumber);
           if (saved.otpRequests) setOtpRequests(saved.otpRequests);
         }
       } catch (err) {
@@ -382,6 +372,90 @@ export default function BaksoAciApp() {
       }
     })();
   }, []);
+
+  // Muat konfigurasi toko (password admin, info toko, bot Telegram, dll) dari Supabase —
+  // terpusat lintas perangkat, supaya ganti password/pengaturan di satu device berlaku di semua device.
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const configFromServer = useRef(true); // sama seperti products: render pertama pakai default, jangan langsung di-sync balik
+  const SHOP_CONFIG_KEY = "config";
+  useEffect(() => {
+    let channel;
+    const applyConfig = (cfg) => {
+      if (!cfg) return;
+      if (cfg.botToken !== undefined) setBotToken(cfg.botToken);
+      if (cfg.chatId !== undefined) setChatId(cfg.chatId);
+      if (cfg.biteshipApiKey !== undefined) setBiteshipApiKey(cfg.biteshipApiKey);
+      if (cfg.waTemplates) setWaTemplates(cfg.waTemplates);
+      if (cfg.adminPassword) setAdminPassword(cfg.adminPassword);
+      if (cfg.schedule) setSchedule(cfg.schedule);
+      if (cfg.shopInfo) setShopInfo(cfg.shopInfo);
+      if (cfg.paymentAccounts) setPaymentAccounts(cfg.paymentAccounts);
+      if (cfg.autoNotify !== undefined) setAutoNotify(cfg.autoNotify);
+      if (cfg.queueNumber) setQueueNumber(cfg.queueNumber);
+    };
+
+    (async () => {
+      try {
+        const { data, error } = await supabase.from("shop_settings").select("value").eq("key", SHOP_CONFIG_KEY).maybeSingle();
+        if (!error && data) {
+          configFromServer.current = true;
+          applyConfig(data.value);
+        } else if (!error && !data) {
+          // Belum ada konfigurasi tersimpan (toko baru) — simpan nilai default awal ke Supabase
+          const defaultConfig = {
+            botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
+            schedule, shopInfo, paymentAccounts, autoNotify, queueNumber,
+          };
+          await supabase.from("shop_settings").insert({ key: SHOP_CONFIG_KEY, value: defaultConfig });
+          configFromServer.current = true;
+        }
+      } catch (err) {
+        // Gagal memuat dari server — pakai default lokal, jangan hentikan aplikasi
+      } finally {
+        setConfigLoaded(true);
+      }
+    })();
+
+    // Realtime: perubahan pengaturan (termasuk ganti password) dari device manapun
+    // langsung berlaku di semua device tanpa perlu setting ulang.
+    channel = supabase
+      .channel("shop-settings-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shop_settings", filter: `key=eq.${SHOP_CONFIG_KEY}` }, (payload) => {
+        if (payload.new) {
+          configFromServer.current = true;
+          applyConfig(payload.new.value);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Auto-sync konfigurasi toko ke Supabase setiap ada perubahan lokal (mis. admin ganti password/pengaturan)
+  const configSyncTimer = useRef(null);
+  useEffect(() => {
+    if (!configLoaded) return;
+    if (configFromServer.current) {
+      configFromServer.current = false;
+      return;
+    }
+    if (configSyncTimer.current) clearTimeout(configSyncTimer.current);
+    configSyncTimer.current = setTimeout(() => {
+      const cfg = {
+        botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
+        schedule, shopInfo, paymentAccounts, autoNotify, queueNumber,
+      };
+      supabase.from("shop_settings").upsert(
+        { key: SHOP_CONFIG_KEY, value: cfg, updated_at: new Date().toISOString() },
+        { onConflict: "key" }
+      ).then(({ error }) => {
+        if (error) console.error("Gagal sinkron pengaturan toko ke server:", error.message || error);
+      });
+    }, 600);
+    return () => clearTimeout(configSyncTimer.current);
+  }, [botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, autoNotify, queueNumber, configLoaded]);
 
   // Muat pesanan dari Supabase (terpusat, lintas perangkat) + dengarkan perubahan real-time
   useEffect(() => {
@@ -503,17 +577,14 @@ export default function BaksoAciApp() {
     return () => clearTimeout(productsSyncTimer.current);
   }, [products, productsLoaded]);
 
-  // Simpan otomatis (debounced) tiap kali data penting berubah
+  // Simpan otomatis (debounced) preferensi lokal per-device (bukan config toko, itu sudah di Supabase)
   useEffect(() => {
     if (!dataLoaded) return; // jangan simpan sebelum load awal selesai (mencegah menimpa data lama dengan default)
     setSaveState("saving");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const payload = {
-          botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
-          schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests,
-        };
+        const payload = { soundEnabled, notifSound, otpRequests };
         const result = await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
         setSaveState(result ? "saved" : "error");
       } catch (err) {
@@ -521,7 +592,7 @@ export default function BaksoAciApp() {
       }
     }, 600);
     return () => clearTimeout(saveTimer.current);
-  }, [botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests, dataLoaded]);
+  }, [soundEnabled, notifSound, otpRequests, dataLoaded]);
 
   const isShopOpen = () => {
     if (schedule.manualClosed) return false;
@@ -852,7 +923,7 @@ export default function BaksoAciApp() {
     return { ok: true, msg: "Verifikasi berhasil." };
   };
 
-  if (!dataLoaded || !ordersLoaded || !productsLoaded) {
+  if (!dataLoaded || !ordersLoaded || !productsLoaded || !configLoaded) {
     return (
       <div data-theme={theme} style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--cream)", flexDirection: "column", gap: 10, fontFamily: "'Inter', sans-serif" }}>
         <style>{fontImport}</style>
