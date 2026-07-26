@@ -2874,6 +2874,8 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
   const [editingProduct, setEditingProduct] = useState(null); // product object or null
   const [newPasswordInput, setNewPasswordInput] = useState("");
   const [savedMsg, setSavedMsg] = useState("");
+  const [telegramSaveMsg, setTelegramSaveMsg] = useState("");
+  const [shopInfoSaveMsg, setShopInfoSaveMsg] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("Semua");
   const [dateFilter, setDateFilter] = useState("");
@@ -4428,6 +4430,19 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
                 />
               </div>
             ))}
+            <button
+              style={{ ...styles.primaryBtn, marginBottom: 8 }}
+              onClick={() => {
+                setShopInfoSaveMsg("Menyimpan...");
+                syncShopConfigToSupabase({ shopInfo, paymentAccounts }).then(({ error }) => {
+                  setShopInfoSaveMsg(error ? "Gagal simpan: " + (error.message || "coba lagi") : "Tersimpan di semua perangkat.");
+                  setTimeout(() => setShopInfoSaveMsg(""), 3000);
+                });
+              }}
+            >
+              Simpan Data Toko & Pembayaran
+            </button>
+            {shopInfoSaveMsg && <div style={{ ...styles.resultBox, background: "var(--success-bg)", color: "var(--success-text)" }}>{shopInfoSaveMsg}</div>}
 
             <div style={styles.divider} />
 
@@ -4441,6 +4456,19 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
               <label style={styles.label}>Chat ID</label>
               <input style={styles.input} placeholder="Contoh: 123456789" value={chatId} onChange={(e) => setChatId(e.target.value)} />
             </div>
+            <button
+              style={{ ...styles.primaryBtn, marginBottom: 8 }}
+              onClick={() => {
+                setTelegramSaveMsg("Menyimpan...");
+                syncShopConfigToSupabase({ botToken, chatId }).then(({ error }) => {
+                  setTelegramSaveMsg(error ? "Gagal simpan: " + (error.message || "coba lagi") : "Tersimpan di semua perangkat.");
+                  setTimeout(() => setTelegramSaveMsg(""), 3000);
+                });
+              }}
+            >
+              Simpan Pengaturan Bot Telegram
+            </button>
+            {telegramSaveMsg && <div style={{ ...styles.resultBox, background: "var(--success-bg)", color: "var(--success-text)" }}>{telegramSaveMsg}</div>}
             <p style={styles.settingsHint}>
               💡 Belum tahu Chat ID? Kirim pesan ke bot, lalu buka:
               <br /><code style={styles.code}>https://api.telegram.org/bot[TOKEN]/getUpdates</code>
