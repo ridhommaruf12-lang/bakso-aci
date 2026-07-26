@@ -361,7 +361,6 @@ export default function BaksoAciApp() {
         const result = await window.storage.get(STORAGE_KEY, false);
         if (result && result.value) {
           const saved = JSON.parse(result.value);
-          if (saved.products) setProducts(saved.products);
           if (saved.botToken !== undefined) setBotToken(saved.botToken);
           if (saved.chatId !== undefined) setChatId(saved.chatId);
           if (saved.biteshipApiKey !== undefined) setBiteshipApiKey(saved.biteshipApiKey);
@@ -429,6 +428,73 @@ export default function BaksoAciApp() {
     };
   }, []);
 
+  // Muat produk (termasuk stok) dari Supabase (terpusat, lintas perangkat) + realtime.
+  // productsLoaded juga dipakai sebagai penanda "boleh mulai auto-sync ke server" —
+  // supaya proses load awal tidak diam-diam ter-anggap sebagai "perubahan" dan menimpa balik data server.
+  const [productsLoaded, setProductsLoaded] = useState(false);
+  const skipNextProductsSync = useRef(false);
+  useEffect(() => {
+    let channel;
+    (async () => {
+      try {
+        const { data, error } = await supabase.from("products").select("id, data");
+        if (!error && data && data.length > 0) {
+          skipNextProductsSync.current = true;
+          setProducts(data.map((row) => row.data));
+        } else if (!error && data && data.length === 0) {
+          // Tabel kosong (toko baru) — isi Supabase dengan produk default awal
+          await supabase.from("products").insert(INITIAL_PRODUCTS.map((p) => ({ id: p.id, data: p })));
+        }
+      } catch (err) {
+        // Gagal memuat produk dari server — pakai data default/lokal, jangan hentikan aplikasi
+      } finally {
+        setProductsLoaded(true);
+      }
+    })();
+
+    // Realtime: perubahan stok/produk dari device manapun (termasuk saat customer checkout
+    // di device lain) langsung ter-refleksi di panel admin & halaman customer lainnya.
+    channel = supabase
+      .channel("products-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "products" }, (payload) => {
+        skipNextProductsSync.current = true;
+        if (payload.eventType === "INSERT") {
+          const row = payload.new;
+          setProducts((prev) => (prev.some((p) => p.id === row.id) ? prev : [...prev, row.data]));
+        } else if (payload.eventType === "UPDATE") {
+          const row = payload.new;
+          setProducts((prev) => prev.map((p) => (p.id === row.id ? row.data : p)));
+        } else if (payload.eventType === "DELETE") {
+          const row = payload.old;
+          setProducts((prev) => prev.filter((p) => p.id !== row.id));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Auto-sync setiap perubahan products (termasuk stok berkurang saat checkout) ke Supabase,
+  // supaya semua device (admin & customer lain) selalu melihat stok terbaru.
+  const productsSyncTimer = useRef(null);
+  useEffect(() => {
+    if (!productsLoaded) return; // jangan sync sebelum load awal selesai
+    if (skipNextProductsSync.current) {
+      // Perubahan ini berasal dari load awal / realtime (data sudah sama dengan server) — lewati agar tidak infinite-loop
+      skipNextProductsSync.current = false;
+      return;
+    }
+    if (productsSyncTimer.current) clearTimeout(productsSyncTimer.current);
+    productsSyncTimer.current = setTimeout(() => {
+      supabase.from("products").upsert(products.map((p) => ({ id: p.id, data: p }))).then(({ error }) => {
+        if (error) console.error("Gagal sinkron produk ke server:", error);
+      });
+    }, 500);
+    return () => clearTimeout(productsSyncTimer.current);
+  }, [products, productsLoaded]);
+
   // Simpan otomatis (debounced) tiap kali data penting berubah
   useEffect(() => {
     if (!dataLoaded) return; // jangan simpan sebelum load awal selesai (mencegah menimpa data lama dengan default)
@@ -437,7 +503,7 @@ export default function BaksoAciApp() {
     saveTimer.current = setTimeout(async () => {
       try {
         const payload = {
-          products, botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
+          botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
           schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests,
         };
         const result = await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
@@ -447,7 +513,7 @@ export default function BaksoAciApp() {
       }
     }, 600);
     return () => clearTimeout(saveTimer.current);
-  }, [products, botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests, dataLoaded]);
+  }, [botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, autoNotify, soundEnabled, notifSound, queueNumber, otpRequests, dataLoaded]);
 
   const isShopOpen = () => {
     if (schedule.manualClosed) return false;
@@ -763,7 +829,7 @@ export default function BaksoAciApp() {
     return { ok: true, msg: "Verifikasi berhasil." };
   };
 
-  if (!dataLoaded || !ordersLoaded) {
+  if (!dataLoaded || !ordersLoaded || !productsLoaded) {
     return (
       <div data-theme={theme} style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--cream)", flexDirection: "column", gap: 10, fontFamily: "'Inter', sans-serif" }}>
         <style>{fontImport}</style>
