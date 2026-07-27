@@ -1720,8 +1720,8 @@ function CustomerShop({ products, orders, onLogoClick, botToken, chatId, shopInf
                 }}
               >
                 <div style={styles.cardMedia}>
-                  {p.image ? (
-                    <img src={p.image} alt={p.name} style={styles.cardMediaImg} />
+                  {(p.images?.[0] || p.image) ? (
+                    <img src={p.images?.[0] || p.image} alt={p.name} style={styles.cardMediaImg} />
                   ) : (
                     <span style={styles.cardMediaEmoji}>{p.emoji}</span>
                   )}
@@ -3039,7 +3039,15 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
     prevNewOrderIdsRef.current = currentNewIds;
   }, [orders, soundEnabled, notifSound]);
 
-  const removeProduct = (id) => setProducts((ps) => ps.filter((p) => p.id !== id));
+  const removeProduct = (id) => {
+    setProducts((ps) => ps.filter((p) => p.id !== id));
+    supabase.from("products").delete().eq("id", id).then(({ error }) => {
+      if (error) {
+        setProductSaveResult({ ok: false, msg: "Gagal menghapus di server: " + (error.message || "coba lagi.") });
+        setTimeout(() => setProductSaveResult(null), 3000);
+      }
+    });
+  };
 
   const toggleSelectOrder = (id) => {
     setSelectedOrderIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -3249,8 +3257,9 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
         <div class="row-inline"><span class="tag">PENERIMA</span><span>: ${order.customer.name}</span></div>
         <div class="detail">+62${order.customer.phone.replace(/^0/, "")}, ${order.customer.address}</div>
       </div>`;
-        // Untuk cetak satu order, isi penuh 1 lembar dengan label yang sama. Untuk banyak order, 1 label per order.
-        const repeatCount = ordersList.length === 1 ? totalSlots : 1;
+        // Isi penuh 1 lembar dengan label yang sama hanya untuk kertas A6 (memang didesain 1 label/lembar).
+        // Untuk A4/A3, atau saat mencetak banyak order sekaligus, cukup 1 label per order (tidak digandakan).
+        const repeatCount = ordersList.length === 1 && paperSize === "A6" ? totalSlots : 1;
         return Array.from({ length: repeatCount }, () => labelHtml).join("");
       })
       .join("");
@@ -3355,12 +3364,27 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
     window.open(waLink, "_blank");
   };
 
+  const [productSaveResult, setProductSaveResult] = useState(null); // { ok, msg }
+
   const saveProduct = (product) => {
     setProducts((ps) => {
       const exists = ps.some((p) => p.id === product.id);
       return exists ? ps.map((p) => (p.id === product.id ? product : p)) : [...ps, product];
     });
     setEditingProduct(null);
+    // Sync langsung ke Supabase (jangan andalkan debounce 500ms) — supaya perubahan
+    // tidak hilang kalau admin langsung refresh/pindah halaman sesaat setelah menyimpan.
+    supabase.from("products").upsert(
+      [{ id: product.id, data: product, updated_at: new Date().toISOString() }],
+      { onConflict: "id" }
+    ).then(({ error }) => {
+      if (error) {
+        setProductSaveResult({ ok: false, msg: "Gagal menyimpan ke server: " + (error.message || "coba lagi.") });
+      } else {
+        setProductSaveResult({ ok: true, msg: "Menu tersimpan ke server." });
+      }
+      setTimeout(() => setProductSaveResult(null), 3000);
+    });
   };
 
   const totalOmzet = orders.reduce((s, o) => s + o.total, 0);
@@ -4201,6 +4225,15 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
             <button style={{ ...styles.addBtn, marginBottom: 16 }} onClick={() => setEditingProduct({ id: genId(), name: "", desc: "", price: 0, tag: "", emoji: "🍢", stock: 10, weight: 0 })}>
               + Tambah Menu Baru
             </button>
+            {productSaveResult && (
+              <div style={{
+                marginBottom: 16, padding: "10px 14px", borderRadius: 10, fontSize: 13.5, fontWeight: 600,
+                background: productSaveResult.ok ? "#E6F4EA" : "#FCE8E6",
+                color: productSaveResult.ok ? "#1E7A3D" : "#C0392B",
+              }}>
+                {productSaveResult.ok ? "✅ " : "⚠️ "}{productSaveResult.msg}
+              </div>
+            )}
             <div style={styles.grid}>
               {products.map((p) => (
                 <div key={p.id} style={styles.card}>
@@ -5022,18 +5055,54 @@ function ProductDetailModal({ product, qty, onChangeQty, onAddToCart, ratingStat
   const isLong = desc.length > 90;
   const shownDesc = expanded || !isLong ? desc : desc.slice(0, 90) + "...";
 
+  // Dukung produk lama (field "image" tunggal) maupun baru (field "images" array).
+  const photos = (product.images && product.images.length > 0)
+    ? product.images
+    : (product.image ? [product.image] : []);
+
+  const [photoIndex, setPhotoIndex] = useState(0);
+  const touchStartX = useRef(null);
+  useEffect(() => { setPhotoIndex(0); }, [product.id]);
+  const goToPhoto = (i) => setPhotoIndex(((i % photos.length) + photos.length) % photos.length);
+  const handleTouchStart = (e) => { touchStartX.current = e.touches[0].clientX; };
+  const handleTouchEnd = (e) => {
+    if (touchStartX.current === null) return;
+    const delta = e.changedTouches[0].clientX - touchStartX.current;
+    if (Math.abs(delta) > 40) goToPhoto(photoIndex + (delta < 0 ? 1 : -1));
+    touchStartX.current = null;
+  };
+
   return (
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.detailModal} className="detail-modal-desktop" onClick={(e) => e.stopPropagation()}>
         <div style={styles.detailPhotoWrap} className="detail-photo-wrap-desktop">
           <button type="button" style={styles.detailBackBtn} onClick={onClose}>←</button>
-          <div style={styles.detailPhotoCircle}>
-            {product.image ? (
-              <img src={product.image} alt={product.name} style={styles.detailPhotoImg} />
+          <div
+            style={styles.detailPhotoCircle}
+            onTouchStart={photos.length > 1 ? handleTouchStart : undefined}
+            onTouchEnd={photos.length > 1 ? handleTouchEnd : undefined}
+          >
+            {photos.length > 0 ? (
+              <img src={photos[photoIndex]} alt={product.name} style={styles.detailPhotoImg} />
             ) : (
               <span style={styles.detailPhotoPlaceholder}>📷</span>
             )}
           </div>
+          {photos.length > 1 && (
+            <>
+              <button type="button" style={{ ...styles.detailPhotoNavBtn, left: 14 }} onClick={() => goToPhoto(photoIndex - 1)} aria-label="Foto sebelumnya">‹</button>
+              <button type="button" style={{ ...styles.detailPhotoNavBtn, right: 14 }} onClick={() => goToPhoto(photoIndex + 1)} aria-label="Foto berikutnya">›</button>
+              <div style={styles.detailPhotoDots}>
+                {photos.map((_, i) => (
+                  <span
+                    key={i}
+                    onClick={() => goToPhoto(i)}
+                    style={{ ...styles.detailPhotoDot, ...(i === photoIndex ? styles.detailPhotoDotActive : {}) }}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div style={styles.detailBody} className="detail-body-desktop">
@@ -5091,36 +5160,80 @@ function ProductEditModal({ product, onClose, onSave }) {
   const [form, setForm] = useState(product);
   const [imageError, setImageError] = useState("");
 
-  const handleImageUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImageError("");
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        // Crop ke persegi (ambil bagian tengah) lalu resize, supaya selalu pas
-        // saat ditampilkan di dalam bingkai lingkaran (card & halaman detail).
-        const MAX_DIM = 480;
-        const side = Math.min(img.width, img.height);
-        const sx = (img.width - side) / 2;
-        const sy = (img.height - side) / 2;
-        const outSize = Math.min(MAX_DIM, side);
-        const canvas = document.createElement("canvas");
-        canvas.width = outSize;
-        canvas.height = outSize;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
-        // JPEG kualitas 0.75 — jauh lebih kecil dari PNG/base64 mentah
-        const compressed = canvas.toDataURL("image/jpeg", 0.75);
-        setForm((f) => ({ ...f, image: compressed }));
+  const MAX_PHOTOS = 5;
+
+  const compressImageFile = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          // Crop ke persegi (ambil bagian tengah) lalu resize, supaya selalu pas
+          // saat ditampilkan di dalam bingkai lingkaran/carousel (card & halaman detail).
+          const MAX_DIM = 480;
+          const side = Math.min(img.width, img.height);
+          const sx = (img.width - side) / 2;
+          const sy = (img.height - side) / 2;
+          const outSize = Math.min(MAX_DIM, side);
+          const canvas = document.createElement("canvas");
+          canvas.width = outSize;
+          canvas.height = outSize;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
+          // JPEG kualitas 0.75 — jauh lebih kecil dari PNG/base64 mentah
+          resolve(canvas.toDataURL("image/jpeg", 0.75));
+        };
+        img.onerror = () => reject(new Error("Gagal membaca gambar."));
+        img.src = reader.result;
       };
-      img.onerror = () => setImageError("Gagal membaca gambar. Coba file lain.");
-      img.src = reader.result;
-    };
-    reader.onerror = () => setImageError("Gagal membaca file. Coba lagi.");
-    reader.readAsDataURL(file);
+      reader.onerror = () => reject(new Error("Gagal membaca file."));
+      reader.readAsDataURL(file);
+    });
+
+  const handleImageUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ""; // reset input supaya bisa upload file yang sama lagi kalau perlu
+    if (files.length === 0) return;
+    setImageError("");
+    const existing = form.images && form.images.length > 0 ? form.images : (form.image ? [form.image] : []);
+    const room = MAX_PHOTOS - existing.length;
+    if (room <= 0) {
+      setImageError(`Maksimal ${MAX_PHOTOS} foto per menu. Hapus salah satu dulu untuk menambah.`);
+      return;
+    }
+    const toProcess = files.slice(0, room);
+    if (files.length > room) {
+      setImageError(`Hanya ${room} foto ditambahkan (batas ${MAX_PHOTOS} foto per menu).`);
+    }
+    try {
+      const compressed = await Promise.all(toProcess.map(compressImageFile));
+      setForm((f) => {
+        const base = f.images && f.images.length > 0 ? f.images : (f.image ? [f.image] : []);
+        return { ...f, images: [...base, ...compressed], image: "" };
+      });
+    } catch (err) {
+      setImageError(err.message || "Gagal membaca salah satu file. Coba lagi.");
+    }
   };
+
+  const removePhotoAt = (idx) => {
+    setForm((f) => {
+      const base = f.images && f.images.length > 0 ? f.images : (f.image ? [f.image] : []);
+      return { ...f, images: base.filter((_, i) => i !== idx), image: "" };
+    });
+  };
+
+  const movePhoto = (idx, dir) => {
+    setForm((f) => {
+      const base = [...(f.images && f.images.length > 0 ? f.images : (f.image ? [f.image] : []))];
+      const target = idx + dir;
+      if (target < 0 || target >= base.length) return f;
+      [base[idx], base[target]] = [base[target], base[idx]];
+      return { ...f, images: base, image: "" };
+    });
+  };
+
+  const formPhotos = form.images && form.images.length > 0 ? form.images : (form.image ? [form.image] : []);
 
   return (
     <div style={styles.overlay} onClick={onClose}>
@@ -5130,22 +5243,37 @@ function ProductEditModal({ product, onClose, onSave }) {
           <button style={styles.closeBtn} onClick={onClose}>✕</button>
         </div>
         <div style={styles.formGroup}>
-          <label style={styles.label}>Gambar Menu (opsional)</label>
-          {form.image ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-              <img src={form.image} alt="Preview" style={{ width: 64, height: 64, borderRadius: 10, objectFit: "cover", border: "1px solid var(--border)" }} />
-              <button type="button" style={styles.linkBtn} onClick={() => setForm((f) => ({ ...f, image: "" }))}>
-                🗑️ Hapus, pakai emoji lagi
-              </button>
+          <label style={styles.label}>Gambar Menu (opsional, bisa lebih dari 1 — bisa digeser di halaman customer)</label>
+          {formPhotos.length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
+              {formPhotos.map((src, idx) => (
+                <div key={idx} style={{ position: "relative", width: 72 }}>
+                  <img src={src} alt={`Foto ${idx + 1}`} style={{ width: 72, height: 72, borderRadius: 10, objectFit: "cover", border: "1px solid var(--border)" }} />
+                  <button
+                    type="button"
+                    onClick={() => removePhotoAt(idx)}
+                    title="Hapus foto ini"
+                    style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: "50%", background: "var(--accent, #C0392B)", color: "white", border: "none", fontSize: 11, lineHeight: 1, cursor: "pointer" }}
+                  >✕</button>
+                  <div style={{ display: "flex", justifyContent: "center", gap: 4, marginTop: 3 }}>
+                    <button type="button" disabled={idx === 0} onClick={() => movePhoto(idx, -1)} style={{ ...styles.linkBtn, fontSize: 11, padding: "1px 4px", opacity: idx === 0 ? 0.3 : 1 }}>◀</button>
+                    <span style={{ fontSize: 10.5, color: "var(--text-muted)" }}>{idx + 1}</span>
+                    <button type="button" disabled={idx === formPhotos.length - 1} onClick={() => movePhoto(idx, 1)} style={{ ...styles.linkBtn, fontSize: 11, padding: "1px 4px", opacity: idx === formPhotos.length - 1 ? 0.3 : 1 }}>▶</button>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             <p style={styles.settingsHint}>Belum ada gambar — kartu menu akan menampilkan emoji di bawah.</p>
           )}
           {imageError && <p style={{ ...styles.settingsHint, color: "var(--danger-text, #C0392B)" }}>{imageError}</p>}
-          <input type="file" accept="image/*" onChange={handleImageUpload} />
+          {formPhotos.length < MAX_PHOTOS && (
+            <input type="file" accept="image/*" multiple onChange={handleImageUpload} />
+          )}
+          <p style={styles.settingsHint}>{formPhotos.length}/{MAX_PHOTOS} foto. Foto pertama jadi foto utama di kartu menu.</p>
         </div>
         <div style={styles.formGroup}>
-          <label style={styles.label}>Emoji {form.image ? "(cadangan jika gambar dihapus)" : ""}</label>
+          <label style={styles.label}>Emoji {formPhotos.length > 0 ? "(cadangan jika semua gambar dihapus)" : ""}</label>
           <input style={styles.input} value={form.emoji} onChange={(e) => setForm({ ...form, emoji: e.target.value })} />
         </div>
         <div style={styles.formGroup}>
@@ -5288,6 +5416,10 @@ const styles = {
   detailPhotoImg: { width: "100%", height: "100%", objectFit: "cover" },
   detailPhotoEmoji: { fontSize: 76 },
   detailPhotoPlaceholder: { fontSize: 52, opacity: 0.3 },
+  detailPhotoNavBtn: { position: "absolute", top: "50%", transform: "translateY(-50%)", width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,0.85)", border: "none", color: "#3E2013", fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1, boxShadow: "0 2px 8px rgba(0,0,0,0.2)" },
+  detailPhotoDots: { position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 6 },
+  detailPhotoDot: { width: 7, height: 7, borderRadius: "50%", background: "rgba(255,255,255,0.5)", cursor: "pointer", transition: "background 0.15s ease" },
+  detailPhotoDotActive: { background: "white", width: 18, borderRadius: 4 },
   detailBody: { padding: "26px 22px 22px", marginTop: -26, background: "var(--cream)", borderRadius: "26px 26px 0 0", position: "relative" },
   detailRatingBadge: { display: "inline-flex", alignItems: "center", gap: 4, background: "var(--surface-alt)", border: "none", borderRadius: 999, padding: "6px 12px", fontSize: 13, fontWeight: 700, color: "#E8A93A", marginBottom: 10, cursor: "pointer" },
   detailTitleRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 },
