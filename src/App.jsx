@@ -3267,8 +3267,9 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
           <style>
             @page { size: ${paper.w}cm ${paper.h}cm; margin: 0.5cm; }
             * { box-sizing: border-box; }
-            body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 0; }
-            .sheet { display: grid; grid-template-columns: repeat(${cols}, 10cm); grid-auto-rows: 10cm; gap: 0; }
+            html, body { margin: 0; padding: 0; width: 100%; text-align: left; }
+            body { font-family: Arial, Helvetica, sans-serif; color: #111; display: flex; justify-content: flex-start; }
+            .sheet { display: grid; grid-template-columns: repeat(${cols}, 10cm); grid-auto-rows: 10cm; gap: 0; margin: 0; justify-content: start; justify-items: start; }
             .label { width: 10cm; height: 10cm; padding: 0.8cm; border: 1px dashed #ccc; display: flex; flex-direction: column; justify-content: center; }
             .tag { font-weight: 700; letter-spacing: 0.5px; }
             .row-inline { font-size: 16px; margin: 3px 0; }
