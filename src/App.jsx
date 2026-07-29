@@ -691,6 +691,9 @@ export default function BaksoAciApp() {
         ongkir: order.ongkir || 0,
         total: order.total || 0,
         status: order.status || "Baru",
+        namaToko: shopInfo?.name || "",
+        noHpToko: shopInfo?.phone || "",
+        alamatToko: shopInfo?.address || "",
       };
       // no-cors: Apps Script tidak selalu mengirim header CORS yang benar ke browser.
       // Mode ini membuat request tetap terkirim (fire-and-forget) walau kita tidak
@@ -766,6 +769,7 @@ export default function BaksoAciApp() {
     }
     setOrders((o) => o.map((ord) => (ord.id === id ? { ...ord, status } : ord)));
     syncOrderToSupabase({ ...prevOrder, status });
+    if (prevOrder) archiveOrderToGoogleSheet({ ...prevOrder, status }); // kirim ulang ke Sheets (upsert by No. Order) supaya data ikut update, mis. saat pembayaran dikonfirmasi
     if (autoNotify && botToken && chatId && STATUS_MESSAGE[status]) {
       const order = orders.find((ord) => ord.id === id);
       if (order) {
