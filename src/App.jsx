@@ -218,6 +218,7 @@ export default function BaksoAciApp() {
   const [shopInfo, setShopInfo] = useState({ name: "Baso Aci Sindhel", phone: "", address: "", pickupAddress: "" });
   const [paymentAccounts, setPaymentAccounts] = useState({ Seabank: "", Dana: "", GoPay: "", ShopeePay: "", QRIS: "" });
   const [paymentMethods, setPaymentMethods] = useState(DEFAULT_PAYMENT_METHODS); // daftar nama metode bayar, bisa diedit admin
+  const [googleSheetUrl, setGoogleSheetUrl] = useState(""); // URL Web App Google Apps Script untuk arsip pesanan otomatis
   const [autoNotify, setAutoNotify] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true); // bunyi notifikasi saat pesanan baru masuk (panel admin)
   const [notifSound, setNotifSound] = useState("klasik"); // preset bunyi notifikasi: klasik | lonceng | chime | alarm
@@ -409,6 +410,7 @@ export default function BaksoAciApp() {
       if (cfg.shopInfo) setShopInfo(cfg.shopInfo);
       if (cfg.paymentAccounts) setPaymentAccounts(cfg.paymentAccounts);
       if (cfg.paymentMethods) setPaymentMethods(cfg.paymentMethods);
+      if (cfg.googleSheetUrl !== undefined) setGoogleSheetUrl(cfg.googleSheetUrl);
       if (cfg.autoNotify !== undefined) setAutoNotify(cfg.autoNotify);
       if (cfg.queueNumber) setQueueNumber(cfg.queueNumber);
     };
@@ -422,7 +424,7 @@ export default function BaksoAciApp() {
           // Belum ada konfigurasi tersimpan (toko baru) — simpan nilai default awal ke Supabase
           const defaultConfig = {
             botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
-            schedule, shopInfo, paymentAccounts, paymentMethods, autoNotify, queueNumber,
+            schedule, shopInfo, paymentAccounts, paymentMethods, googleSheetUrl, autoNotify, queueNumber,
           };
           await supabase.from("shop_settings").insert({ key: SHOP_CONFIG_KEY, value: defaultConfig });
         }
@@ -452,7 +454,7 @@ export default function BaksoAciApp() {
   const syncShopConfigToSupabase = (overrides = {}) => {
     const cfg = {
       botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
-      schedule, shopInfo, paymentAccounts, paymentMethods, autoNotify, queueNumber,
+      schedule, shopInfo, paymentAccounts, paymentMethods, googleSheetUrl, autoNotify, queueNumber,
       ...overrides,
     };
     return supabase.from("shop_settings").upsert(
@@ -470,7 +472,7 @@ export default function BaksoAciApp() {
     if (!configLoaded) return;
     const currentCfg = {
       botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
-      schedule, shopInfo, paymentAccounts, paymentMethods, autoNotify, queueNumber,
+      schedule, shopInfo, paymentAccounts, paymentMethods, googleSheetUrl, autoNotify, queueNumber,
     };
     const currentJSON = JSON.stringify(currentCfg);
     if (lastKnownConfigJSON.current === null) {
@@ -490,7 +492,7 @@ export default function BaksoAciApp() {
       });
     }, 600);
     return () => clearTimeout(configSyncTimer.current);
-  }, [botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, paymentMethods, autoNotify, queueNumber, configLoaded]);
+  }, [botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, paymentMethods, googleSheetUrl, autoNotify, queueNumber, configLoaded]);
 
   // Muat pesanan dari Supabase (terpusat, lintas perangkat) + dengarkan perubahan real-time
   useEffect(() => {
@@ -663,10 +665,52 @@ export default function BaksoAciApp() {
     });
   };
 
+  // Kirim 1 baris arsip pesanan ke Google Sheets (via Google Apps Script Web App).
+  // Ini murni CADANGAN/arsip — kalau gagal (URL belum diatur, atau sedang offline),
+  // tidak boleh menghalangi proses pesanan utama yang tetap jalan normal di Supabase.
+  const archiveOrderToGoogleSheet = (order) => {
+    if (!googleSheetUrl?.trim()) return; // admin belum atur URL arsip, lewati saja
+    try {
+      const itemsSummary = (order.items || [])
+        .map((i) => `${i.name} x${i.qty}`)
+        .join(", ");
+      const payload = {
+        waktuMasuk: order.createdAt || new Date().toLocaleString("id-ID"),
+        noOrder: `#${order.id.slice(0, 5).toUpperCase()}`,
+        noAntrian: order.queueNumber ?? "",
+        namaCustomer: order.customer?.name || "",
+        noHp: order.customer?.phone || "",
+        alamat: order.customer?.address || "",
+        area: order.customer?.area
+          ? (order.customer.area === AREA_LUAR_KOTA ? `${AREA_LUAR_KOTA} (${order.customer.areaCity || "-"})` : AREA_DALAM_KOTA)
+          : "-",
+        ekspedisi: order.customer?.expedition || "",
+        metodeBayar: order.customer?.payment || "",
+        itemPesanan: itemsSummary,
+        beratGram: order.totalWeight || 0,
+        ongkir: order.ongkir || 0,
+        total: order.total || 0,
+        status: order.status || "Baru",
+      };
+      // no-cors: Apps Script tidak selalu mengirim header CORS yang benar ke browser.
+      // Mode ini membuat request tetap terkirim (fire-and-forget) walau kita tidak
+      // bisa membaca isi responnya dari sisi kode — cukup untuk kebutuhan arsip satu-arah.
+      fetch(googleSheetUrl, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify(payload),
+      }).catch((err) => console.error("Gagal mengarsipkan pesanan ke Google Sheets:", err));
+    } catch (err) {
+      console.error("Gagal menyiapkan data arsip pesanan:", err);
+    }
+  };
+
   const addOrder = (order) => {
     const fullOrder = { ...order, queueNumber };
     setOrders((o) => [fullOrder, ...o]);
     setQueueNumber((n) => n + 1);
+    archiveOrderToGoogleSheet(fullOrder);
 
     const updatedStockById = {}; // dikumpulkan sekalian untuk langsung dikirim ke Supabase di bawah
     setProducts((ps) =>
@@ -975,6 +1019,8 @@ export default function BaksoAciApp() {
           setPaymentAccounts={setPaymentAccounts}
           paymentMethods={paymentMethods}
           setPaymentMethods={setPaymentMethods}
+          googleSheetUrl={googleSheetUrl}
+          setGoogleSheetUrl={setGoogleSheetUrl}
           autoNotify={autoNotify}
           setAutoNotify={setAutoNotify}
           soundEnabled={soundEnabled}
@@ -2947,7 +2993,7 @@ function AdminLogin({ adminPassword, onSuccess, onCancel }) {
 }
 
 // ============ PANEL ADMIN ============
-function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatus, updateOrderNote, updateOrderOngkir, updateOrderResi, deleteOrder, updateOrderItems, syncShopConfigToSupabase, botToken, setBotToken, chatId, setChatId, biteshipApiKey, setBiteshipApiKey, waTemplates, setWaTemplates, adminPassword, setAdminPassword, schedule, setSchedule, shopInfo, setShopInfo, paymentAccounts, setPaymentAccounts, paymentMethods, setPaymentMethods, autoNotify, setAutoNotify, soundEnabled, setSoundEnabled, notifSound, setNotifSound, queueNumber, setQueueNumber, saveState, testimonials, updateTestimonialStatus, deleteTestimonial, productRatings, deleteProductRating, otpRequests, theme, toggleTheme, onExit }) {
+function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatus, updateOrderNote, updateOrderOngkir, updateOrderResi, deleteOrder, updateOrderItems, syncShopConfigToSupabase, botToken, setBotToken, chatId, setChatId, biteshipApiKey, setBiteshipApiKey, waTemplates, setWaTemplates, adminPassword, setAdminPassword, schedule, setSchedule, shopInfo, setShopInfo, paymentAccounts, setPaymentAccounts, paymentMethods, setPaymentMethods, googleSheetUrl, setGoogleSheetUrl, autoNotify, setAutoNotify, soundEnabled, setSoundEnabled, notifSound, setNotifSound, queueNumber, setQueueNumber, saveState, testimonials, updateTestimonialStatus, deleteTestimonial, productRatings, deleteProductRating, otpRequests, theme, toggleTheme, onExit }) {
   const [tab, setTab] = useState("orders"); // orders | menu | settings
   const [editingProduct, setEditingProduct] = useState(null); // product object or null
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -3146,7 +3192,7 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
   const handleBackupData = () => {
     const payload = {
       products, orders, botToken, chatId, biteshipApiKey, waTemplates, adminPassword,
-      schedule, shopInfo, paymentAccounts, paymentMethods, autoNotify, soundEnabled, notifSound, queueNumber,
+      schedule, shopInfo, paymentAccounts, paymentMethods, googleSheetUrl, autoNotify, soundEnabled, notifSound, queueNumber,
       exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -3178,6 +3224,7 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
         if (saved.shopInfo) setShopInfo(saved.shopInfo);
         if (saved.paymentAccounts) setPaymentAccounts(saved.paymentAccounts);
         if (saved.paymentMethods) setPaymentMethods(saved.paymentMethods);
+        if (saved.googleSheetUrl !== undefined) setGoogleSheetUrl(saved.googleSheetUrl);
         if (saved.autoNotify !== undefined) setAutoNotify(saved.autoNotify);
         if (saved.soundEnabled !== undefined) setSoundEnabled(saved.soundEnabled);
         if (saved.notifSound !== undefined) setNotifSound(saved.notifSound);
@@ -4615,6 +4662,35 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
               Simpan Data Toko & Pembayaran
             </button>
             {shopInfoSaveMsg && <div style={{ ...styles.resultBox, background: "var(--success-bg)", color: "var(--success-text)" }}>{shopInfoSaveMsg}</div>}
+
+            <div style={styles.divider} />
+
+            <h3 style={{ marginTop: 0 }}>Arsip Pesanan ke Google Sheets</h3>
+            <p style={styles.settingsInfo}>
+              Setiap ada pesanan baru masuk, datanya otomatis dicatat sebagai baris baru di Google Sheets — arsip cadangan permanen yang bisa dibuka kapan saja lewat browser, terpisah dari aplikasi ini. Data utama tetap tersimpan seperti biasa; ini murni salinan arsip.
+            </p>
+            <div style={styles.formGroup}>
+              <label style={styles.label}>URL Web App Google Apps Script</label>
+              <input
+                style={styles.input}
+                placeholder="https://script.google.com/macros/s/xxxxx/exec"
+                value={googleSheetUrl}
+                onChange={(e) => setGoogleSheetUrl(e.target.value)}
+              />
+              <p style={styles.settingsHint}>Kosongkan untuk menonaktifkan arsip otomatis ke Sheets.</p>
+            </div>
+            <button
+              style={{ ...styles.primaryBtn, marginBottom: 8 }}
+              onClick={() => {
+                setShopInfoSaveMsg("Menyimpan...");
+                syncShopConfigToSupabase({ googleSheetUrl }).then(({ error }) => {
+                  setShopInfoSaveMsg(error ? "Gagal simpan: " + (error.message || "coba lagi") : "Tersimpan di semua perangkat.");
+                  setTimeout(() => setShopInfoSaveMsg(""), 3000);
+                });
+              }}
+            >
+              Simpan URL Arsip Sheets
+            </button>
 
             <div style={styles.divider} />
 
