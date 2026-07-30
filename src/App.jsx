@@ -495,23 +495,27 @@ export default function BaksoAciApp() {
   }, [botToken, chatId, biteshipApiKey, waTemplates, adminPassword, schedule, shopInfo, paymentAccounts, paymentMethods, googleSheetUrl, autoNotify, queueNumber, configLoaded]);
 
   // Muat pesanan dari Supabase (terpusat, lintas perangkat) + dengarkan perubahan real-time
+  const [ordersRefreshing, setOrdersRefreshing] = useState(false);
+  const refreshOrders = async () => {
+    setOrdersRefreshing(true);
+    try {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("id, status, data")
+        .order("created_at", { ascending: false });
+      if (!error && data) {
+        setOrders(data.map((row) => ({ ...row.data, id: row.id, status: row.status })));
+      }
+    } catch (err) {
+      // Gagal memuat pesanan dari server — biarkan daftar lama tetap tampil
+    } finally {
+      setOrdersRefreshing(false);
+      setOrdersLoaded(true);
+    }
+  };
   useEffect(() => {
     let channel;
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from("orders")
-          .select("id, status, data")
-          .order("created_at", { ascending: false });
-        if (!error && data) {
-          setOrders(data.map((row) => ({ ...row.data, id: row.id, status: row.status })));
-        }
-      } catch (err) {
-        // Gagal memuat pesanan dari server — biarkan daftar kosong, jangan hentikan aplikasi
-      } finally {
-        setOrdersLoaded(true);
-      }
-    })();
+    refreshOrders();
 
     // Realtime: setiap ada pesanan baru/berubah/terhapus dari device manapun,
     // panel admin & customer lain otomatis ter-update tanpa perlu refresh.
@@ -998,6 +1002,8 @@ export default function BaksoAciApp() {
           setProducts={setProducts}
           orders={orders}
           setOrders={setOrders}
+          refreshOrders={refreshOrders}
+          ordersRefreshing={ordersRefreshing}
           updateOrderStatus={updateOrderStatus}
           updateOrderNote={updateOrderNote}
           updateOrderOngkir={updateOrderOngkir}
@@ -2997,7 +3003,7 @@ function AdminLogin({ adminPassword, onSuccess, onCancel }) {
 }
 
 // ============ PANEL ADMIN ============
-function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatus, updateOrderNote, updateOrderOngkir, updateOrderResi, deleteOrder, updateOrderItems, syncShopConfigToSupabase, botToken, setBotToken, chatId, setChatId, biteshipApiKey, setBiteshipApiKey, waTemplates, setWaTemplates, adminPassword, setAdminPassword, schedule, setSchedule, shopInfo, setShopInfo, paymentAccounts, setPaymentAccounts, paymentMethods, setPaymentMethods, googleSheetUrl, setGoogleSheetUrl, autoNotify, setAutoNotify, soundEnabled, setSoundEnabled, notifSound, setNotifSound, queueNumber, setQueueNumber, saveState, testimonials, updateTestimonialStatus, deleteTestimonial, productRatings, deleteProductRating, otpRequests, theme, toggleTheme, onExit }) {
+function AdminPanel({ products, setProducts, orders, setOrders, refreshOrders, ordersRefreshing, updateOrderStatus, updateOrderNote, updateOrderOngkir, updateOrderResi, deleteOrder, updateOrderItems, syncShopConfigToSupabase, botToken, setBotToken, chatId, setChatId, biteshipApiKey, setBiteshipApiKey, waTemplates, setWaTemplates, adminPassword, setAdminPassword, schedule, setSchedule, shopInfo, setShopInfo, paymentAccounts, setPaymentAccounts, paymentMethods, setPaymentMethods, googleSheetUrl, setGoogleSheetUrl, autoNotify, setAutoNotify, soundEnabled, setSoundEnabled, notifSound, setNotifSound, queueNumber, setQueueNumber, saveState, testimonials, updateTestimonialStatus, deleteTestimonial, productRatings, deleteProductRating, otpRequests, theme, toggleTheme, onExit }) {
   const [tab, setTab] = useState("orders"); // orders | menu | settings
   const [editingProduct, setEditingProduct] = useState(null); // product object or null
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -3860,6 +3866,16 @@ function AdminPanel({ products, setProducts, orders, setOrders, updateOrderStatu
 
         {tab === "orders" && (
           <div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+              <button
+                style={styles.smallBtn}
+                onClick={refreshOrders}
+                disabled={ordersRefreshing}
+                title="Muat ulang daftar pesanan dari server"
+              >
+                {ordersRefreshing ? "⏳ Memuat..." : "🔄 Refresh"}
+              </button>
+            </div>
             <div style={styles.statusFilterRow}>
               {STATUS_FLOW.map((s) => {
                 const count = orders.filter((o) => o.status === s).length;
