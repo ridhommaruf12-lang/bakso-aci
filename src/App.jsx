@@ -698,6 +698,11 @@ export default function BaksoAciApp() {
         namaToko: shopInfo?.name || "",
         noHpToko: shopInfo?.phone || "",
         alamatToko: shopInfo?.address || "",
+        // Sertakan id internal (primary key di Supabase) supaya Dashboard bisa menghapus/
+        // mengubah status pesanan ini di Supabase juga saat baris Sheets-nya dihapus/diubah
+        // dari Dashboard — tanpa ini, hapus/ubah status dari Dashboard hanya berlaku sepihak
+        // di Sheets dan tidak ikut terlihat di App.jsx.
+        orderIdInternal: order.id,
       };
       // no-cors: Apps Script tidak selalu mengirim header CORS yang benar ke browser.
       // Mode ini membuat request tetap terkirim (fire-and-forget) walau kita tidak
