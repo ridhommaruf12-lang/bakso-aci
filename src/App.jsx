@@ -75,7 +75,7 @@ const AREA_LUAR_KOTA = "Luar Kota Garut";
 // Pilihan ekspedisi tersedia menyesuaikan area pengiriman
 const EXPEDITION_OPTIONS = {
   dalam: ["GoSend", "Shopee Instan"],
-  luar: ["J&T"],
+  luar: ["J&T", "Paxel"],
 };
 
 // Ekspedisi yang ongkirnya dipesan & dibayar langsung oleh customer ke driver (tidak masuk tagihan/sistem toko)
